@@ -1,0 +1,95 @@
+pg_name     := "enma-pg"
+pg_port     := "5432"
+pg_user     := "postgres"
+pg_password := "postgres"
+pg_db       := "enma"
+pg_version  := "18-alpine"
+
+cassandra_name    := "enma-cassandra"
+cassandra_version := "5"
+
+net_name       := "enma-net"
+migrations_dir := "migrations"
+
+# DSN for migrate container (uses container name as host)
+db_dsn := "postgres://" + pg_user + ":" + pg_password + "@" + pg_name + ":" + pg_port + "/" + pg_db + "?sslmode=disable"
+
+# List available recipes
+default:
+    @just --list
+
+# Start postgres and cassandra, then run migrations
+up: _ensure-network _start-postgres _start-cassandra _cassandra-setup migrate-up
+
+# Stop all services and remove containers
+down: _stop-postgres _stop-cassandra
+
+# Build the server binary
+build:
+    go build -o bin/server ./cmd/main.go
+
+# Run the server
+run:
+    go run ./cmd/main.go
+
+# Run all pending migrations
+migrate-up:
+    docker run --rm --network {{net_name}} \
+        -v {{justfile_directory()}}/{{migrations_dir}}:/migrations \
+        migrate/migrate:latest \
+        -path=/migrations -database "{{db_dsn}}" up
+
+# Roll back the last migration
+migrate-down:
+    docker run --rm --network {{net_name}} \
+        -v {{justfile_directory()}}/{{migrations_dir}}:/migrations \
+        migrate/migrate:latest \
+        -path=/migrations -database "{{db_dsn}}" down 1
+
+# Create a new migration: just migrate-create name=add_goals_table
+migrate-create name:
+    docker run --rm \
+        -v {{justfile_directory()}}/{{migrations_dir}}:/migrations \
+        migrate/migrate:latest \
+        create -ext sql -dir /migrations -seq "{{name}}"
+
+# Open a psql shell into the running postgres container
+psql:
+    docker exec -it {{pg_name}} psql -U {{pg_user}} -d {{pg_db}}
+
+# Open a cqlsh shell into the running cassandra container
+cqlsh:
+    docker exec -it {{cassandra_name}} cqlsh
+
+_ensure-network:
+    docker network inspect {{net_name}} >/dev/null 2>&1 || docker network create {{net_name}} >/dev/null
+
+_start-postgres:
+    docker run --name {{pg_name}} \
+        -e POSTGRES_PASSWORD={{pg_password}} \
+        -e POSTGRES_USER={{pg_user}} \
+        -e POSTGRES_DB={{pg_db}} \
+        -p {{pg_port}}:5432 \
+        --network {{net_name}} \
+        -d postgres:{{pg_version}}
+    @echo "Waiting for postgres..."
+    @until docker exec {{pg_name}} pg_isready -U {{pg_user}} >/dev/null 2>&1; do sleep 0.2; done
+    @echo "Postgres ready."
+
+_stop-postgres:
+    docker rm -f {{pg_name}} >/dev/null 2>&1 || true
+
+_start-cassandra:
+    docker run --name {{cassandra_name}} \
+        -p 9042:9042 \
+        --network {{net_name}} \
+        -d cassandra:{{cassandra_version}}
+    @echo "Waiting for Cassandra (this takes ~30-60s)..."
+    @until docker exec {{cassandra_name}} cqlsh -e "SELECT cluster_name FROM system.local" >/dev/null 2>&1; do sleep 2; done
+    @echo "Cassandra ready."
+
+_stop-cassandra:
+    docker rm -f {{cassandra_name}} >/dev/null 2>&1 || true
+
+_cassandra-setup:
+    docker exec {{cassandra_name}} cqlsh -e "CREATE KEYSPACE IF NOT EXISTS enma WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};"
