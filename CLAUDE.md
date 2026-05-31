@@ -28,6 +28,17 @@ entries, err := pgx.CollectRows(rows, pgx.RowToStructByName[JournalEntry])
 Struct field mapping uses `db` tag or auto-converts CamelCase → snake_case (e.g. `UserID` → `user_id`).
 Variants: `RowToStructByName` (strict), `RowToStructByNameLax` (lenient), `RowToStructByPos` (positional).
 
+## References
+
+### golang-jwt/jwt source
+- **Clone:** `git clone https://github.com/golang-jwt/jwt references/jwt`
+- **Use for:** JWT signing, parsing, claims validation, parser options
+
+Key usage rules:
+- Always pass `jwt.WithValidMethods([]string{"HS256"})` to `ParseWithClaims` — the library strongly recommends this to prevent algorithm confusion attacks. It checks the signing method before the keyfunc is called, so the keyfunc only needs to return the key.
+- Do not manually check `t.Method.(*jwt.SigningMethodHMAC)` in the keyfunc — `WithValidMethods` handles this at the parser level.
+- Do not check `!token.Valid` after `ParseWithClaims` — if `err == nil`, `token.Valid` is always `true`. Just check `err`.
+
 ## Rules
 
 ### postgres.DB interface

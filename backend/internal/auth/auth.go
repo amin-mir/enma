@@ -117,13 +117,13 @@ func (a *Auth) Logout(ctx context.Context, plainToken string) {
 
 func (a *Auth) ValidateAccessToken(tokenStr string) (*Claims, error) {
 	claims := &Claims{}
-	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, ErrInvalidToken
-		}
-		return []byte(a.cfg.Secret), nil
-	})
-	if err != nil || !token.Valid {
+	_, err := jwt.ParseWithClaims(tokenStr, claims,
+		func(t *jwt.Token) (any, error) {
+			return []byte(a.cfg.Secret), nil
+		},
+		jwt.WithValidMethods([]string{"HS256"}),
+	)
+	if err != nil {
 		return nil, ErrInvalidToken
 	}
 	return claims, nil

@@ -1,20 +1,52 @@
 package handler
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 
+	"github.com/amin-mir/enma/internal/model"
 	"github.com/amin-mir/enma/internal/postgres"
 )
 
-type JournalHandler struct {
-	pg *postgres.Postgres
+//go:generate go tool mockgen -source=journal.go -destination=mocks/mock_journal.go -package=mocks JournalService
+type JournalService interface {
+	CreateJournalEntry(ctx context.Context, userID uuid.UUID, content string) (postgres.CreateJournalEntryResult, error)
+	ListJournalEntries(ctx context.Context, userID uuid.UUID) ([]model.JournalEntry, error)
+	GetJournalEntry(ctx context.Context, entryID, userID uuid.UUID) (model.JournalEntry, error)
+	UpdateJournalEntry(ctx context.Context, entryID, userID uuid.UUID, content string) error
 }
 
-func NewJournalHandler(pg *postgres.Postgres) *JournalHandler {
-	return &JournalHandler{pg: pg}
+type createJournalReq struct {
+	Content string `json:"content"`
+}
+
+type createJournalResp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type updateJournalReq struct {
+	Content string `json:"content"`
+}
+
+type JournalHandler struct {
+	svc JournalService
+}
+
+func NewJournalHandler(svc JournalService) *JournalHandler {
+	return &JournalHandler{svc: svc}
+}
+
+func (h *JournalHandler) Mount(r fiber.Router, protected fiber.Handler) {
+	g := r.Group("/journals", protected)
+	g.Post("/", h.create)
+	g.Get("/", h.list)
+	g.Get("/:id", h.get)
+	g.Put("/:id", h.update)
 }
 
 func userIDFromCtx(c fiber.Ctx) (uuid.UUID, error) {
@@ -25,90 +57,83 @@ func userIDFromCtx(c fiber.Ctx) (uuid.UUID, error) {
 	return uuid.Parse(idStr)
 }
 
-func (h *JournalHandler) Create(c fiber.Ctx) error {
+func (h *JournalHandler) create(c fiber.Ctx) error {
 	userID, err := userIDFromCtx(c)
 	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		return c.Status(fiber.StatusUnauthorized).JSON(errResp{"unauthorized"})
 	}
 
-	var req struct {
-		Content string `json:"content"`
-	}
+	var req createJournalReq
 	if err := c.Bind().Body(&req); err != nil || req.Content == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "content is required"})
+		return c.Status(fiber.StatusBadRequest).JSON(errResp{"content is required"})
 	}
 
-	res, err := h.pg.CreateJournalEntry(c.Context(), userID, req.Content)
+	res, err := h.svc.CreateJournalEntry(c.Context(), userID, req.Content)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(errResp{"internal error"})
 	}
 
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"id":         res.ID,
-		"created_at": res.CreatedAt,
-	})
+	return c.Status(fiber.StatusCreated).JSON(createJournalResp{res.ID, res.CreatedAt})
 }
 
-func (h *JournalHandler) List(c fiber.Ctx) error {
+func (h *JournalHandler) list(c fiber.Ctx) error {
 	userID, err := userIDFromCtx(c)
 	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		return c.Status(fiber.StatusUnauthorized).JSON(errResp{"unauthorized"})
 	}
 
-	entries, err := h.pg.ListJournalEntries(c.Context(), userID)
+	entries, err := h.svc.ListJournalEntries(c.Context(), userID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(errResp{"internal error"})
 	}
 
 	return c.JSON(entries)
 }
 
-func (h *JournalHandler) Get(c fiber.Ctx) error {
+func (h *JournalHandler) get(c fiber.Ctx) error {
 	userID, err := userIDFromCtx(c)
 	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		return c.Status(fiber.StatusUnauthorized).JSON(errResp{"unauthorized"})
 	}
 
 	entryID, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+		return c.Status(fiber.StatusBadRequest).JSON(errResp{"invalid id"})
 	}
 
-	entry, err := h.pg.GetJournalEntry(c.Context(), entryID, userID)
+	entry, err := h.svc.GetJournalEntry(c.Context(), entryID, userID)
 	if errors.Is(err, postgres.ErrNotFound) {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
+		return c.Status(fiber.StatusNotFound).JSON(errResp{"not found"})
 	}
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(errResp{"internal error"})
 	}
 
 	return c.JSON(entry)
 }
 
-func (h *JournalHandler) Update(c fiber.Ctx) error {
+func (h *JournalHandler) update(c fiber.Ctx) error {
 	userID, err := userIDFromCtx(c)
 	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		return c.Status(fiber.StatusUnauthorized).JSON(errResp{"unauthorized"})
 	}
 
 	entryID, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+		return c.Status(fiber.StatusBadRequest).JSON(errResp{"invalid id"})
 	}
 
-	var req struct {
-		Content string `json:"content"`
-	}
+	var req updateJournalReq
 	if err := c.Bind().Body(&req); err != nil || req.Content == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "content is required"})
+		return c.Status(fiber.StatusBadRequest).JSON(errResp{"content is required"})
 	}
 
-	err = h.pg.UpdateJournalEntry(c.Context(), entryID, userID, req.Content)
+	err = h.svc.UpdateJournalEntry(c.Context(), entryID, userID, req.Content)
 	if errors.Is(err, postgres.ErrNotFound) {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
+		return c.Status(fiber.StatusNotFound).JSON(errResp{"not found"})
 	}
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(errResp{"internal error"})
 	}
 
 	return c.SendStatus(fiber.StatusNoContent)
