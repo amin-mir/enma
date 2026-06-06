@@ -1,1 +1,3 @@
-references/
+references/*
+!references/repos.txt
+.claude/settings.local.json

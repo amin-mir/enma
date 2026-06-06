@@ -1,33 +1,33 @@
 # Enma — Implementation Plan
 
-## Phase 1 — Backend Foundation
+## Phase 1 — Backend Foundation ✅
 
-### Step 1: Project Setup
+### Step 1: Project Setup ✅
 - Initialize Go module under `/backend`
 - Dependencies: Fiber, pgx (Postgres), gocql (Cassandra), golang-jwt, bcrypt
 - Folder structure: `cmd/`, `internal/`, `migrations/`
 
-### Step 2: Database Schema
-- Postgres: `users`, `journal_entries`, `refresh_tokens`
-- Cassandra: `chat_messages` keyspace + table
-- Migration tooling (golang-migrate or plain SQL files)
+### Step 2: Database Schema ✅ (Postgres) / ⏳ (Cassandra deferred)
+- Postgres: `users`, `journal_entries`, `refresh_tokens` ✅
+- Cassandra: `chat_messages` keyspace + table — deferred to Phase 3 (Step 10)
+- Migration tooling: golang-migrate via Docker ✅
 
-### Step 3: Auth
-- `POST /auth/register` — email + password, bcrypt hash
-- `POST /auth/login` — returns access token + refresh token
-- `POST /auth/refresh` — rotates refresh token, returns new access token
-- `POST /auth/logout` — invalidates refresh token
-- JWT middleware to protect all other routes
+### Step 3: Auth ✅
+- `POST /auth/register` — email + password, Argon2id hash ✅
+- `POST /auth/login` — returns access token + refresh token ✅
+- `POST /auth/refresh` — rotates refresh token via CTE ✅
+- `POST /auth/logout` — invalidates refresh token ✅
+- JWT middleware to protect all other routes ✅
 
-### Step 4: Journal Endpoints
-- `POST /journals` — create entry
-- `GET /journals` — list all for authenticated user, descending
-- `GET /journals/:id` — get single entry
-- `PUT /journals/:id` — update entry
+### Step 4: Journal Endpoints ✅
+- `POST /journals` — create entry ✅
+- `GET /journals` — list all for authenticated user, descending ✅
+- `GET /journals/:id` — get single entry ✅
+- `PUT /journals/:id` — update entry ✅
 
 ---
 
-## Phase 2 — Frontend Foundation
+## Phase 2 — Frontend Foundation 👈 NEXT
 
 ### Step 5: Auth Screens
 - Register and login pages
@@ -56,6 +56,7 @@
 - Chunking strategy: single chunk for short entries, paragraph-split with overlap for long entries
 
 ### Step 10: Chat Interface
+- Cassandra schema for `chat_messages`
 - SSE streaming endpoint on backend
 - Chat UI in Svelte with streaming token display
 - Conversation stored in Cassandra

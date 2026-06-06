@@ -27,6 +27,15 @@ just run               # start the server on :8080
 
 ## Just recipes
 
+Run from the project root:
+
+```
+just refs-clone                  clone all reference repos listed in references/repos.txt
+just refs-pull                   pull latest changes in all cloned reference repos
+```
+
+Run from `backend/`:
+
 ```
 just up                          start postgres + cassandra and run migrations
 just down                        stop and remove all containers
