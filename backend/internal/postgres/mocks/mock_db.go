@@ -163,15 +163,16 @@ func (mr *MockDBMockRecorder) RotateRefreshToken(ctx, oldTokenHash, newTokenHash
 }
 
 // UpdateJournalEntry mocks base method.
-func (m *MockDB) UpdateJournalEntry(ctx context.Context, entryID, userID uuid.UUID, content string) error {
+func (m *MockDB) UpdateJournalEntry(ctx context.Context, entryID, userID uuid.UUID, content string, version int32) (int32, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateJournalEntry", ctx, entryID, userID, content)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret := m.ctrl.Call(m, "UpdateJournalEntry", ctx, entryID, userID, content, version)
+	ret0, _ := ret[0].(int32)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // UpdateJournalEntry indicates an expected call of UpdateJournalEntry.
-func (mr *MockDBMockRecorder) UpdateJournalEntry(ctx, entryID, userID, content any) *gomock.Call {
+func (mr *MockDBMockRecorder) UpdateJournalEntry(ctx, entryID, userID, content, version any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateJournalEntry", reflect.TypeOf((*MockDB)(nil).UpdateJournalEntry), ctx, entryID, userID, content)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateJournalEntry", reflect.TypeOf((*MockDB)(nil).UpdateJournalEntry), ctx, entryID, userID, content, version)
 }

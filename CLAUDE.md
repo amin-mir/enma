@@ -22,15 +22,34 @@ When implementing Fiber features, check `references/recipes` first for working e
 - **Repo:** `references/pgx`
 - **Use for:** pgx API reference, row helper functions, type mapping, pool usage
 
-Key row helper pattern (prefer over manual scanning):
+#### Query vs QueryRow
+
+`Query` returns `pgx.Rows`. `QueryRow` returns `pgx.Row`. They are different types.
+`RowToStructByName` (and all `RowToFunc` variants) accept `CollectableRow`, which only
+`pgx.Rows` implements — **not** `pgx.Row`. So `QueryRow` can only be used with manual `.Scan()`.
+
+#### When to use what
+
+| Goal | Pattern |
+|------|---------|
+| Single row → struct | `Query` + `CollectOneRow` + `RowToStructByName` |
+| Multiple rows → []struct | `Query` + `CollectRows` + `RowToStructByName` |
+| Single primitive / few fields | `QueryRow` + `.Scan(&a, &b)` |
+
+`CollectOneRow` automatically closes rows and returns `pgx.ErrNoRows` if no row matched.
+
 ```go
-// Single row
-rows, _ := pool.Query(ctx, "SELECT id, content, created_at FROM journal_entries WHERE id=$1", id)
+// Single row into struct
+rows, _ := pool.Query(ctx, "SELECT id, content, version, created_at, updated_at FROM journal_entries WHERE id=$1", id)
 entry, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[JournalEntry])
 
-// Multiple rows
-rows, _ := pool.Query(ctx, "SELECT id, content, created_at FROM journal_entries WHERE user_id=$1", userID)
+// Multiple rows into slice
+rows, _ := pool.Query(ctx, "SELECT id, content, version, created_at, updated_at FROM journal_entries WHERE user_id=$1", userID)
 entries, err := pgx.CollectRows(rows, pgx.RowToStructByName[JournalEntry])
+
+// Single primitive — QueryRow is fine here
+var count int
+pool.QueryRow(ctx, "SELECT COUNT(*) FROM users").Scan(&count)
 ```
 
 Struct field mapping uses `db` tag or auto-converts CamelCase → snake_case (e.g. `UserID` → `user_id`).
@@ -53,6 +72,10 @@ Key usage rules:
 
 ## Rules
 
+### Testing
+- Run `just test` (from `backend/`) before every commit and push — all tests must pass.
+- After editing any file in `internal/postgres/`, run the postgres tests: `go test ./internal/postgres/...`. They use testcontainers and need no manual DB setup.
+
 ### postgres.DB interface
 When adding a new method to `*Postgres`:
 1. Add it to the `DB` interface in `internal/postgres/postgres.go`
@@ -63,3 +86,4 @@ When adding a new method to `*Postgres`:
 
 - `DECISIONS.md` — all architecture and tech stack decisions made so far
 - `PLAN.md` — phased implementation plan
+- `ARCHITECTURE.md` — backend package structure, DBTX interface, Store pattern, testing strategy, Phase 3 chat design

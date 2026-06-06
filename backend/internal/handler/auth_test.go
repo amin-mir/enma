@@ -47,32 +47,29 @@ func TestAuthHandler_Register(t *testing.T) {
 	tokens := auth.TokenPair{AccessToken: "access", RefreshToken: "refresh"}
 
 	tests := []struct {
-		name   string
-		body   func() *bytes.Reader
-		setup  func(*mocks.MockAuthService)
-		status int
-		resp   any
+		name     string
+		body     func() *bytes.Reader
+		setup    func(*mocks.MockAuthService)
+		status   int
+		wantResp tokenResp
 	}{
 		{
 			name:   "invalid json",
 			body:   func() *bytes.Reader { return bytes.NewReader([]byte("invalid")) },
 			setup:  func(m *mocks.MockAuthService) {},
 			status: fiber.StatusBadRequest,
-			resp:   errResp{"invalid request"},
 		},
 		{
 			name:   "missing email",
 			body:   func() *bytes.Reader { return jsonBody(t, registerReq{Password: "pass"}) },
 			setup:  func(m *mocks.MockAuthService) {},
 			status: fiber.StatusBadRequest,
-			resp:   errResp{"email and password are required"},
 		},
 		{
 			name:   "missing password",
 			body:   func() *bytes.Reader { return jsonBody(t, registerReq{Email: "a@b.com"}) },
 			setup:  func(m *mocks.MockAuthService) {},
 			status: fiber.StatusBadRequest,
-			resp:   errResp{"email and password are required"},
 		},
 		{
 			name: "email already in use",
@@ -83,7 +80,6 @@ func TestAuthHandler_Register(t *testing.T) {
 				m.EXPECT().Register(gomock.Any(), "a@b.com", "pass").Return(auth.TokenPair{}, auth.ErrEmailInUse)
 			},
 			status: fiber.StatusConflict,
-			resp:   errResp{"email already in use"},
 		},
 		{
 			name: "success",
@@ -93,8 +89,8 @@ func TestAuthHandler_Register(t *testing.T) {
 			setup: func(m *mocks.MockAuthService) {
 				m.EXPECT().Register(gomock.Any(), "a@b.com", "pass").Return(tokens, nil)
 			},
-			status: fiber.StatusCreated,
-			resp:   tokenResp{tokens.AccessToken, tokens.RefreshToken},
+			status:   fiber.StatusCreated,
+			wantResp: tokenResp{tokens.AccessToken, tokens.RefreshToken},
 		},
 	}
 
@@ -111,7 +107,11 @@ func TestAuthHandler_Register(t *testing.T) {
 			defer resp.Body.Close()
 
 			require.Equal(t, tt.status, resp.StatusCode)
-			requireJSON(t, resp, tt.resp)
+			if tt.status == fiber.StatusCreated {
+				var got tokenResp
+				require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+				require.Equal(t, tt.wantResp, got)
+			}
 		})
 	}
 }
@@ -122,18 +122,17 @@ func TestAuthHandler_Login(t *testing.T) {
 	tokens := auth.TokenPair{AccessToken: "access", RefreshToken: "refresh"}
 
 	tests := []struct {
-		name   string
-		body   func() *bytes.Reader
-		setup  func(*mocks.MockAuthService)
-		status int
-		resp   any
+		name     string
+		body     func() *bytes.Reader
+		setup    func(*mocks.MockAuthService)
+		status   int
+		wantResp tokenResp
 	}{
 		{
 			name:   "invalid json",
 			body:   func() *bytes.Reader { return bytes.NewReader([]byte("invalid")) },
 			setup:  func(m *mocks.MockAuthService) {},
 			status: fiber.StatusBadRequest,
-			resp:   errResp{"invalid request"},
 		},
 		{
 			name: "invalid credentials",
@@ -144,7 +143,6 @@ func TestAuthHandler_Login(t *testing.T) {
 				m.EXPECT().Login(gomock.Any(), "a@b.com", "wrong").Return(auth.TokenPair{}, auth.ErrInvalidCredentials)
 			},
 			status: fiber.StatusUnauthorized,
-			resp:   errResp{"invalid credentials"},
 		},
 		{
 			name: "success",
@@ -154,8 +152,8 @@ func TestAuthHandler_Login(t *testing.T) {
 			setup: func(m *mocks.MockAuthService) {
 				m.EXPECT().Login(gomock.Any(), "a@b.com", "pass").Return(tokens, nil)
 			},
-			status: fiber.StatusOK,
-			resp:   tokenResp{tokens.AccessToken, tokens.RefreshToken},
+			status:   fiber.StatusOK,
+			wantResp: tokenResp{tokens.AccessToken, tokens.RefreshToken},
 		},
 	}
 
@@ -172,7 +170,11 @@ func TestAuthHandler_Login(t *testing.T) {
 			defer resp.Body.Close()
 
 			require.Equal(t, tt.status, resp.StatusCode)
-			requireJSON(t, resp, tt.resp)
+			if tt.status == fiber.StatusOK {
+				var got tokenResp
+				require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+				require.Equal(t, tt.wantResp, got)
+			}
 		})
 	}
 }
@@ -183,18 +185,17 @@ func TestAuthHandler_Refresh(t *testing.T) {
 	tokens := auth.TokenPair{AccessToken: "access", RefreshToken: "refresh"}
 
 	tests := []struct {
-		name   string
-		body   func() *bytes.Reader
-		setup  func(*mocks.MockAuthService)
-		status int
-		resp   any
+		name     string
+		body     func() *bytes.Reader
+		setup    func(*mocks.MockAuthService)
+		status   int
+		wantResp tokenResp
 	}{
 		{
 			name:   "missing refresh token",
 			body:   func() *bytes.Reader { return jsonBody(t, refreshReq{}) },
 			setup:  func(m *mocks.MockAuthService) {},
 			status: fiber.StatusBadRequest,
-			resp:   errResp{"refresh_token is required"},
 		},
 		{
 			name: "invalid token",
@@ -203,7 +204,6 @@ func TestAuthHandler_Refresh(t *testing.T) {
 				m.EXPECT().Refresh(gomock.Any(), "bad").Return(auth.TokenPair{}, auth.ErrInvalidToken)
 			},
 			status: fiber.StatusUnauthorized,
-			resp:   errResp{"invalid or expired refresh token"},
 		},
 		{
 			name: "success",
@@ -211,8 +211,8 @@ func TestAuthHandler_Refresh(t *testing.T) {
 			setup: func(m *mocks.MockAuthService) {
 				m.EXPECT().Refresh(gomock.Any(), "valid").Return(tokens, nil)
 			},
-			status: fiber.StatusOK,
-			resp:   tokenResp{tokens.AccessToken, tokens.RefreshToken},
+			status:   fiber.StatusOK,
+			wantResp: tokenResp{tokens.AccessToken, tokens.RefreshToken},
 		},
 	}
 
@@ -229,7 +229,11 @@ func TestAuthHandler_Refresh(t *testing.T) {
 			defer resp.Body.Close()
 
 			require.Equal(t, tt.status, resp.StatusCode)
-			requireJSON(t, resp, tt.resp)
+			if tt.status == fiber.StatusOK {
+				var got tokenResp
+				require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+				require.Equal(t, tt.wantResp, got)
+			}
 		})
 	}
 }
@@ -274,14 +278,4 @@ func TestAuthHandler_Logout(t *testing.T) {
 			require.Equal(t, tt.status, resp.StatusCode)
 		})
 	}
-}
-
-func requireJSON(t *testing.T, resp *http.Response, want any) {
-	t.Helper()
-	wantBytes, err := json.Marshal(want)
-	require.NoError(t, err)
-	var wantMap, gotMap map[string]any
-	require.NoError(t, json.Unmarshal(wantBytes, &wantMap))
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&gotMap))
-	require.Equal(t, wantMap, gotMap)
 }

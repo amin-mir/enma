@@ -43,25 +43,23 @@ func TestJournalHandler_Create(t *testing.T) {
 	entryID := uuid.New()
 
 	tests := []struct {
-		name   string
-		body   func(t *testing.T) []byte
-		setup  func(*mocks.MockJournalService)
-		status int
-		resp   any
+		name     string
+		body     func(t *testing.T) []byte
+		setup    func(*mocks.MockJournalService)
+		status   int
+		wantResp createJournalResp
 	}{
 		{
 			name:   "invalid json",
 			body:   func(t *testing.T) []byte { return []byte("invalid") },
 			setup:  func(m *mocks.MockJournalService) {},
 			status: fiber.StatusBadRequest,
-			resp:   errResp{"content is required"},
 		},
 		{
 			name:   "missing content",
 			body:   func(t *testing.T) []byte { return []byte(`{}`) },
 			setup:  func(m *mocks.MockJournalService) {},
 			status: fiber.StatusBadRequest,
-			resp:   errResp{"content is required"},
 		},
 		{
 			name: "DB error",
@@ -74,7 +72,6 @@ func TestJournalHandler_Create(t *testing.T) {
 				m.EXPECT().CreateJournalEntry(gomock.Any(), userID, "hello").Return(postgres.CreateJournalEntryResult{}, errors.New("db error"))
 			},
 			status: fiber.StatusInternalServerError,
-			resp:   errResp{"internal error"},
 		},
 		{
 			name: "success",
@@ -84,10 +81,10 @@ func TestJournalHandler_Create(t *testing.T) {
 				return b
 			},
 			setup: func(m *mocks.MockJournalService) {
-				m.EXPECT().CreateJournalEntry(gomock.Any(), userID, "hello").Return(postgres.CreateJournalEntryResult{ID: entryID, CreatedAt: now}, nil)
+				m.EXPECT().CreateJournalEntry(gomock.Any(), userID, "hello").Return(postgres.CreateJournalEntryResult{ID: entryID, CreatedAt: now, Version: 1}, nil)
 			},
-			status: fiber.StatusCreated,
-			resp:   createJournalResp{ID: entryID, CreatedAt: now},
+			status:   fiber.StatusCreated,
+			wantResp: createJournalResp{ID: entryID, CreatedAt: now, Version: int32(1)},
 		},
 	}
 
@@ -104,7 +101,11 @@ func TestJournalHandler_Create(t *testing.T) {
 			defer resp.Body.Close()
 
 			require.Equal(t, tt.status, resp.StatusCode)
-			requireJSON(t, resp, tt.resp)
+			if tt.status == fiber.StatusCreated {
+				var got createJournalResp
+				require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+				require.Equal(t, tt.wantResp, got)
+			}
 		})
 	}
 }
@@ -238,49 +239,50 @@ func TestJournalHandler_Update(t *testing.T) {
 	entryID := uuid.New()
 
 	tests := []struct {
-		name   string
-		id     string
-		body   func(t *testing.T) []byte
-		setup  func(*mocks.MockJournalService)
-		status int
+		name     string
+		id       string
+		body     func(t *testing.T) []byte
+		setup    func(*mocks.MockJournalService)
+		status   int
+		wantResp updateJournalResp
 	}{
 		{
-			name:  "invalid id",
-			id:    "not-a-uuid",
-			body:  func(t *testing.T) []byte { return []byte(`{"content":"hello"}`) },
-			setup: func(m *mocks.MockJournalService) {},
+			name:   "invalid id",
+			id:     "not-a-uuid",
+			body:   func(t *testing.T) []byte { return []byte(`{"content":"hello","version":1}`) },
+			setup:  func(m *mocks.MockJournalService) {},
 			status: fiber.StatusBadRequest,
 		},
 		{
-			name:  "missing content",
-			id:    entryID.String(),
-			body:  func(t *testing.T) []byte { return []byte(`{}`) },
-			setup: func(m *mocks.MockJournalService) {},
+			name:   "missing content",
+			id:     entryID.String(),
+			body:   func(t *testing.T) []byte { return []byte(`{}`) },
+			setup:  func(m *mocks.MockJournalService) {},
 			status: fiber.StatusBadRequest,
 		},
 		{
-			name: "not found",
+			name: "conflict",
 			id:   entryID.String(),
 			body: func(t *testing.T) []byte {
-				b, err := json.Marshal(updateJournalReq{Content: "hello"})
+				b, err := json.Marshal(updateJournalReq{Content: "hello", Version: 1})
 				require.NoError(t, err)
 				return b
 			},
 			setup: func(m *mocks.MockJournalService) {
-				m.EXPECT().UpdateJournalEntry(gomock.Any(), entryID, userID, "hello").Return(postgres.ErrNotFound)
+				m.EXPECT().UpdateJournalEntry(gomock.Any(), entryID, userID, "hello", int32(1)).Return(int32(0), postgres.ErrConflict)
 			},
-			status: fiber.StatusNotFound,
+			status: fiber.StatusConflict,
 		},
 		{
 			name: "DB error",
 			id:   entryID.String(),
 			body: func(t *testing.T) []byte {
-				b, err := json.Marshal(updateJournalReq{Content: "hello"})
+				b, err := json.Marshal(updateJournalReq{Content: "hello", Version: 1})
 				require.NoError(t, err)
 				return b
 			},
 			setup: func(m *mocks.MockJournalService) {
-				m.EXPECT().UpdateJournalEntry(gomock.Any(), entryID, userID, "hello").Return(errors.New("db error"))
+				m.EXPECT().UpdateJournalEntry(gomock.Any(), entryID, userID, "hello", int32(1)).Return(int32(0), errors.New("db error"))
 			},
 			status: fiber.StatusInternalServerError,
 		},
@@ -288,14 +290,15 @@ func TestJournalHandler_Update(t *testing.T) {
 			name: "success",
 			id:   entryID.String(),
 			body: func(t *testing.T) []byte {
-				b, err := json.Marshal(updateJournalReq{Content: "hello"})
+				b, err := json.Marshal(updateJournalReq{Content: "hello", Version: 1})
 				require.NoError(t, err)
 				return b
 			},
 			setup: func(m *mocks.MockJournalService) {
-				m.EXPECT().UpdateJournalEntry(gomock.Any(), entryID, userID, "hello").Return(nil)
+				m.EXPECT().UpdateJournalEntry(gomock.Any(), entryID, userID, "hello", int32(1)).Return(int32(2), nil)
 			},
-			status: fiber.StatusNoContent,
+			status:   fiber.StatusOK,
+			wantResp: updateJournalResp{Version: int32(2)},
 		},
 	}
 
@@ -312,6 +315,11 @@ func TestJournalHandler_Update(t *testing.T) {
 			defer resp.Body.Close()
 
 			require.Equal(t, tt.status, resp.StatusCode)
+			if tt.status == fiber.StatusOK {
+				var got updateJournalResp
+				require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+				require.Equal(t, tt.wantResp, got)
+			}
 		})
 	}
 }

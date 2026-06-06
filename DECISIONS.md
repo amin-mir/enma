@@ -93,6 +93,15 @@ Cassandra is used only where the access pattern is truly write-heavy and append-
 
 ---
 
+## Journal Autosave
+
+The journal entry view is always in edit mode — no save button. Changes persist automatically.
+
+- **Debounce:** client waits ~1-2s after the user stops typing before firing a PUT
+- **Client-side hash check:** before firing the debounced PUT, compute a hash of the current content (e.g. a simple string hash or SHA). If it matches the hash of the last successfully saved content, skip the request — no-op saves cost nothing
+- **Optimistic concurrency (version number):** each `journal_entries` row has a `version INTEGER` column. Every PUT sends the current version; the server increments it atomically. If the WHERE clause matches zero rows, the server returns 409 Conflict (a newer in-flight save already landed). The client discards the stale request silently — the newer save already has the correct content.
+- **No WebSockets needed** — debounced PUT over HTTP is sufficient for single-user autosave
+
 ## Still To Decide
 
 - Cassandra schema details (partition keys, clustering keys, TTL strategy)

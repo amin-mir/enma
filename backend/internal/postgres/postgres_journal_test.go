@@ -21,6 +21,7 @@ func TestCreateJournalEntry(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, res.ID)
 	require.NotZero(t, res.CreatedAt)
+	require.Equal(t, int32(1), res.Version)
 }
 
 func TestListJournalEntries(t *testing.T) {
@@ -145,12 +146,33 @@ func TestUpdateJournalEntry(t *testing.T) {
 	res, err := pg.CreateJournalEntry(ctx, userID, "original content")
 	require.NoError(t, err)
 
-	err = pg.UpdateJournalEntry(ctx, res.ID, userID, "updated content")
+	newVersion, err := pg.UpdateJournalEntry(ctx, res.ID, userID, "updated content", res.Version)
 	require.NoError(t, err)
+	require.Equal(t, res.Version+1, newVersion)
 
 	entry, err := pg.GetJournalEntry(ctx, res.ID, userID)
 	require.NoError(t, err)
 	require.Equal(t, "updated content", entry.Content)
+	require.Equal(t, newVersion, entry.Version)
+}
+
+func TestUpdateJournalEntry_Conflict(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	pg := newTestDB(t)
+
+	userID, err := pg.CreateUser(ctx, "update-conflict@example.com", "hash")
+	require.NoError(t, err)
+
+	res, err := pg.CreateJournalEntry(ctx, userID, "original")
+	require.NoError(t, err)
+
+	_, err = pg.UpdateJournalEntry(ctx, res.ID, userID, "first update", res.Version)
+	require.NoError(t, err)
+
+	_, err = pg.UpdateJournalEntry(ctx, res.ID, userID, "stale update", res.Version)
+	require.ErrorIs(t, err, ErrConflict)
 }
 
 func TestUpdateJournalEntry_NotFound(t *testing.T) {
@@ -162,8 +184,8 @@ func TestUpdateJournalEntry_NotFound(t *testing.T) {
 	userID, err := pg.CreateUser(ctx, "update-notfound@example.com", "hash")
 	require.NoError(t, err)
 
-	err = pg.UpdateJournalEntry(ctx, uuid.New(), userID, "content")
-	require.ErrorIs(t, err, ErrNotFound)
+	_, err = pg.UpdateJournalEntry(ctx, uuid.New(), userID, "content", 1)
+	require.ErrorIs(t, err, ErrConflict)
 }
 
 func TestUpdateJournalEntry_WrongUser(t *testing.T) {
@@ -180,6 +202,6 @@ func TestUpdateJournalEntry_WrongUser(t *testing.T) {
 	res, err := pg.CreateJournalEntry(ctx, userID1, "original")
 	require.NoError(t, err)
 
-	err = pg.UpdateJournalEntry(ctx, res.ID, userID2, "hacked")
-	require.ErrorIs(t, err, ErrNotFound)
+	_, err = pg.UpdateJournalEntry(ctx, res.ID, userID2, "hacked", res.Version)
+	require.ErrorIs(t, err, ErrConflict)
 }

@@ -24,6 +24,10 @@ up: _ensure-network _start-postgres _start-cassandra _cassandra-setup migrate-up
 # Stop all services and remove containers
 down: _stop-postgres _stop-cassandra
 
+# Run all tests (postgres tests use testcontainers, no manual DB needed)
+test:
+    go test ./...
+
 # Build the server binary
 build:
     go build -o bin/server ./cmd/main.go

@@ -18,6 +18,7 @@ const sqlstateUniqueViolation = "23505"
 var (
 	ErrNotFound        = errors.New("not found")
 	ErrUniqueViolation = errors.New("unique violation")
+	ErrConflict        = errors.New("conflict")
 )
 
 func isUniqueViolation(err error) bool {
@@ -41,8 +42,8 @@ type DB interface {
 	ListJournalEntries(ctx context.Context, userID uuid.UUID) ([]model.JournalEntry, error)
 	// GetJournalEntry returns ErrNotFound if no entry exists for that id and user.
 	GetJournalEntry(ctx context.Context, entryID, userID uuid.UUID) (model.JournalEntry, error)
-	// UpdateJournalEntry returns ErrNotFound if no entry exists for that id and user.
-	UpdateJournalEntry(ctx context.Context, entryID, userID uuid.UUID, content string) error
+	// UpdateJournalEntry returns ErrConflict if the version does not match (stale write).
+	UpdateJournalEntry(ctx context.Context, entryID, userID uuid.UUID, content string, version int32) (int32, error)
 }
 
 type Postgres struct {

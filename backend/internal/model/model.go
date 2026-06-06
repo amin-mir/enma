@@ -17,6 +17,7 @@ type JournalEntry struct {
 	ID        uuid.UUID `db:"id"         json:"id"`
 	UserID    uuid.UUID `db:"user_id"    json:"user_id"`
 	Content   string    `db:"content"    json:"content"`
+	Version   int32     `db:"version"    json:"version"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
 }

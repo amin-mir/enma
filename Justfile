@@ -4,6 +4,10 @@ refs_list := "references/repos.txt"
 default:
     @just --list
 
+# Run all backend tests
+test:
+    cd backend && go test ./...
+
 # Clone all reference repos listed in references/repos.txt (skips already-cloned)
 refs-clone:
     #!/usr/bin/env bash

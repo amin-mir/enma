@@ -17,7 +17,7 @@ type JournalService interface {
 	CreateJournalEntry(ctx context.Context, userID uuid.UUID, content string) (postgres.CreateJournalEntryResult, error)
 	ListJournalEntries(ctx context.Context, userID uuid.UUID) ([]model.JournalEntry, error)
 	GetJournalEntry(ctx context.Context, entryID, userID uuid.UUID) (model.JournalEntry, error)
-	UpdateJournalEntry(ctx context.Context, entryID, userID uuid.UUID, content string) error
+	UpdateJournalEntry(ctx context.Context, entryID, userID uuid.UUID, content string, version int32) (int32, error)
 }
 
 type createJournalReq struct {
@@ -27,10 +27,16 @@ type createJournalReq struct {
 type createJournalResp struct {
 	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
+	Version   int32     `json:"version"`
 }
 
 type updateJournalReq struct {
 	Content string `json:"content"`
+	Version int32  `json:"version"`
+}
+
+type updateJournalResp struct {
+	Version int32 `json:"version"`
 }
 
 type JournalHandler struct {
@@ -73,7 +79,7 @@ func (h *JournalHandler) create(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(errResp{"internal error"})
 	}
 
-	return c.Status(fiber.StatusCreated).JSON(createJournalResp{res.ID, res.CreatedAt})
+	return c.Status(fiber.StatusCreated).JSON(createJournalResp{ID: res.ID, CreatedAt: res.CreatedAt, Version: res.Version})
 }
 
 func (h *JournalHandler) list(c fiber.Ctx) error {
@@ -124,17 +130,17 @@ func (h *JournalHandler) update(c fiber.Ctx) error {
 	}
 
 	var req updateJournalReq
-	if err := c.Bind().Body(&req); err != nil || req.Content == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(errResp{"content is required"})
+	if err := c.Bind().Body(&req); err != nil || req.Content == "" || req.Version <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(errResp{"content and version are required"})
 	}
 
-	err = h.svc.UpdateJournalEntry(c.Context(), entryID, userID, req.Content)
-	if errors.Is(err, postgres.ErrNotFound) {
-		return c.Status(fiber.StatusNotFound).JSON(errResp{"not found"})
+	newVersion, err := h.svc.UpdateJournalEntry(c.Context(), entryID, userID, req.Content, req.Version)
+	if errors.Is(err, postgres.ErrConflict) {
+		return c.Status(fiber.StatusConflict).JSON(errResp{"conflict"})
 	}
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(errResp{"internal error"})
 	}
 
-	return c.SendStatus(fiber.StatusNoContent)
+	return c.JSON(updateJournalResp{Version: newVersion})
 }

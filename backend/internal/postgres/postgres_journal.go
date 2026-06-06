@@ -12,25 +12,25 @@ import (
 )
 
 type CreateJournalEntryResult struct {
-	ID        uuid.UUID
-	CreatedAt time.Time
+	ID        uuid.UUID `db:"id"`
+	CreatedAt time.Time `db:"created_at"`
+	Version   int32     `db:"version"`
 }
 
 func (pg *Postgres) CreateJournalEntry(ctx context.Context, userID uuid.UUID, content string) (CreateJournalEntryResult, error) {
-	var res CreateJournalEntryResult
-	err := pg.pool.QueryRow(ctx,
+	rows, _ := pg.pool.Query(ctx,
 		`INSERT INTO journal_entries (user_id, content)
 		 VALUES ($1, $2)
-		 RETURNING id, created_at`,
+		 RETURNING id, created_at, version`,
 		userID, content,
-	).Scan(&res.ID, &res.CreatedAt)
-	return res, err
+	)
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[CreateJournalEntryResult])
 }
 
 // Uses composite index (user_id, created_at DESC) — covers both the WHERE and ORDER BY.
 func (pg *Postgres) ListJournalEntries(ctx context.Context, userID uuid.UUID) ([]model.JournalEntry, error) {
 	rows, _ := pg.pool.Query(ctx,
-		`SELECT id, user_id, content, created_at, updated_at
+		`SELECT id, user_id, content, version, created_at, updated_at
 		 FROM journal_entries
 		 WHERE user_id = $1
 		 ORDER BY created_at DESC`,
@@ -42,7 +42,7 @@ func (pg *Postgres) ListJournalEntries(ctx context.Context, userID uuid.UUID) ([
 // Uses the primary key index on id; user_id is a post-index filter.
 func (pg *Postgres) GetJournalEntry(ctx context.Context, entryID, userID uuid.UUID) (model.JournalEntry, error) {
 	rows, _ := pg.pool.Query(ctx,
-		`SELECT id, user_id, content, created_at, updated_at
+		`SELECT id, user_id, content, version, created_at, updated_at
 		 FROM journal_entries
 		 WHERE id = $1 AND user_id = $2`,
 		entryID, userID,
@@ -54,19 +54,18 @@ func (pg *Postgres) GetJournalEntry(ctx context.Context, entryID, userID uuid.UU
 	return entry, err
 }
 
-// Uses the primary key index on id; user_id is a post-index filter.
-func (pg *Postgres) UpdateJournalEntry(ctx context.Context, entryID, userID uuid.UUID, content string) error {
-	tag, err := pg.pool.Exec(ctx,
+// Uses the primary key index on id; user_id and version are post-index filters.
+func (pg *Postgres) UpdateJournalEntry(ctx context.Context, entryID, userID uuid.UUID, content string, version int32) (int32, error) {
+	var newVersion int32
+	err := pg.pool.QueryRow(ctx,
 		`UPDATE journal_entries
-		 SET content = $1, updated_at = NOW()
-		 WHERE id = $2 AND user_id = $3`,
-		content, entryID, userID,
-	)
-	if err != nil {
-		return err
+		 SET content = $1, updated_at = NOW(), version = version + 1
+		 WHERE id = $2 AND user_id = $3 AND version = $4
+		 RETURNING version`,
+		content, entryID, userID, version,
+	).Scan(&newVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrConflict
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return newVersion, err
 }
