@@ -78,6 +78,23 @@ pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 
 ---
 
+## File Layout Conventions
+
+Each package follows a consistent file layout:
+
+| File | Contents |
+|------|----------|
+| `<name>.go` | Domain types, sentinel errors — no DB, no HTTP |
+| `postgres.go` | `Store struct{ DB db.DBTX }` + all DB query methods (exported) |
+| `http.go` | HTTP handler type/function, `Mount`, request/response structs |
+
+Rules:
+- `Store` is always exported, field is `DB db.DBTX`, all methods are exported
+- Request/response structs live in `http.go`, directly above the handler that owns them
+- Shared response types (e.g. `errResp`) sit above `Mount`
+
+---
+
 ## Store Pattern
 
 Each package defines a `Store` struct holding a `db.DBTX`. DB query methods live on

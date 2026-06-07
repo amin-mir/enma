@@ -1,216 +1,244 @@
 package auth
 
 import (
-	"context"
+	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 
-	"github.com/amin-mir/enma/internal/model"
-	"github.com/amin-mir/enma/internal/password"
-	"github.com/amin-mir/enma/internal/postgres"
-	"github.com/amin-mir/enma/internal/postgres/mocks"
+	"github.com/amin-mir/enma/internal/testutil"
+	"github.com/amin-mir/enma/internal/user"
 )
 
-func newTestAuth(t *testing.T, db postgres.DB) *Auth {
+var testCfg = Config{
+	Secret:               "test-secret",
+	AccessTokenDuration:  15 * time.Minute,
+	RefreshTokenDuration: 30 * 24 * time.Hour,
+}
+
+func newTestApp(pool *pgxpool.Pool) *fiber.App {
+	app := fiber.New()
+	New(pool, zerolog.Nop(), testCfg).MountHTTPHandlers(app)
+	return app
+}
+
+func registerNewUser(t *testing.T, app *fiber.App, email, pass string) tokenResp {
 	t.Helper()
-	return New(db, zerolog.Nop(), Config{
-		Secret:               "test-secret",
-		AccessTokenDuration:  15 * time.Minute,
-		RefreshTokenDuration: 30 * 24 * time.Hour,
-	})
+	status, tokens, err := testutil.Request[tokenResp](
+		app, http.MethodPost, "/auth/register",
+		registerReq{Email: email, Password: pass},
+	)
+	require.NoError(t, err)
+	require.Equal(t, fiber.StatusCreated, status)
+	return tokens
 }
 
 func TestRegister(t *testing.T) {
 	t.Parallel()
+	pool := testutil.SetupPostgres(t, filepath.Join("..", "..", "migrations", "000001_initial_schema.up.sql"))
+	app := newTestApp(pool)
 
-	ctx := context.Background()
-	ctrl := gomock.NewController(t)
-	db := mocks.NewMockDB(ctrl)
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		status, got, err := testutil.Request[tokenResp](
+			app, http.MethodPost, "/auth/register",
+			registerReq{Email: uuid.New().String() + "@test.com", Password: "password123"},
+		)
+		require.NoError(t, err)
+		require.Equal(t, fiber.StatusCreated, status)
+		require.NotEmpty(t, got.AccessToken)
+		require.NotEmpty(t, got.RefreshToken)
+	})
 
-	userID := uuid.New()
-	db.EXPECT().CreateUser(ctx, "user@example.com", gomock.Any()).Return(userID, nil)
-	db.EXPECT().CreateRefreshToken(ctx, userID, gomock.Any(), gomock.Any()).Return(nil)
+	t.Run("missing_fields", func(t *testing.T) {
+		t.Parallel()
+		status, _, err := testutil.Request[struct{}](
+			app, http.MethodPost, "/auth/register",
+			registerReq{Email: "a@b.com"},
+		)
+		require.NoError(t, err)
+		require.Equal(t, fiber.StatusBadRequest, status)
+	})
 
-	tokens, err := newTestAuth(t, db).Register(ctx, "user@example.com", "password123")
-	require.NoError(t, err)
-	require.NotEmpty(t, tokens.AccessToken)
-	require.NotEmpty(t, tokens.RefreshToken)
-}
+	t.Run("duplicate_email", func(t *testing.T) {
+		t.Parallel()
+		email := uuid.New().String() + "@test.com"
 
-func TestRegister_DuplicateEmail(t *testing.T) {
-	t.Parallel()
+		for i := range 2 {
+			status, _, err := testutil.Request[struct{}](
+				app, http.MethodPost, "/auth/register",
+				registerReq{Email: email, Password: "pass"},
+			)
+			require.NoError(t, err)
 
-	ctx := context.Background()
-	ctrl := gomock.NewController(t)
-	db := mocks.NewMockDB(ctrl)
-
-	db.EXPECT().CreateUser(ctx, "dupe@example.com", gomock.Any()).Return(uuid.UUID{}, postgres.ErrUniqueViolation)
-
-	_, err := newTestAuth(t, db).Register(ctx, "dupe@example.com", "password123")
-	require.ErrorIs(t, err, ErrEmailInUse)
+			if i == 0 {
+				require.Equal(t, fiber.StatusCreated, status)
+			} else {
+				require.Equal(t, fiber.StatusConflict, status)
+			}
+		}
+	})
 }
 
 func TestLogin(t *testing.T) {
 	t.Parallel()
+	pool := testutil.SetupPostgres(t, filepath.Join("..", "..", "migrations", "000001_initial_schema.up.sql"))
+	app := newTestApp(pool)
 
-	ctx := context.Background()
-	ctrl := gomock.NewController(t)
-	db := mocks.NewMockDB(ctrl)
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		email := uuid.New().String() + "@test.com"
+		registerNewUser(t, app, email, "pass")
 
-	// Use a real argon2 hash of "password123".
-	hash, err := password.Hash("password123")
-	require.NoError(t, err)
+		status, got, err := testutil.Request[tokenResp](
+			app, http.MethodPost, "/auth/login",
+			loginReq{Email: email, Password: "pass"},
+		)
+		require.NoError(t, err)
+		require.Equal(t, fiber.StatusOK, status)
+		require.NotEmpty(t, got.AccessToken)
+		require.NotEmpty(t, got.RefreshToken)
+	})
 
-	userID := uuid.New()
-	db.EXPECT().GetUserByEmail(ctx, "user@example.com").Return(model.User{
-		ID:           userID,
-		Email:        "user@example.com",
-		PasswordHash: hash,
-	}, nil)
-	db.EXPECT().CreateRefreshToken(ctx, userID, gomock.Any(), gomock.Any()).Return(nil)
+	t.Run("wrong_password", func(t *testing.T) {
+		t.Parallel()
+		email := uuid.New().String() + "@test.com"
+		registerNewUser(t, app, email, "correct")
 
-	tokens, err := newTestAuth(t, db).Login(ctx, "user@example.com", "password123")
-	require.NoError(t, err)
-	require.NotEmpty(t, tokens.AccessToken)
-	require.NotEmpty(t, tokens.RefreshToken)
-}
+		status, _, err := testutil.Request[struct{}](
+			app, http.MethodPost, "/auth/login",
+			loginReq{Email: email, Password: "wrong"},
+		)
+		require.NoError(t, err)
+		require.Equal(t, fiber.StatusUnauthorized, status)
+	})
 
-func TestLogin_UserNotFound(t *testing.T) {
-	t.Parallel()
+	t.Run("unknown_email", func(t *testing.T) {
+		t.Parallel()
+		status, _, err := testutil.Request[struct{}](
+			app, http.MethodPost, "/auth/login",
+			loginReq{Email: uuid.New().String() + "@test.com", Password: "pass"},
+		)
+		require.NoError(t, err)
+		require.Equal(t, fiber.StatusUnauthorized, status)
+	})
 
-	ctx := context.Background()
-	ctrl := gomock.NewController(t)
-	db := mocks.NewMockDB(ctrl)
+	t.Run("malformed_hash", func(t *testing.T) {
+		t.Parallel()
+		email := uuid.New().String() + "@test.com"
+		s := user.Store{DB: pool}
+		_, err := s.Create(t.Context(), email, "not-a-valid-hash")
+		require.NoError(t, err)
 
-	db.EXPECT().GetUserByEmail(ctx, "nobody@example.com").Return(model.User{}, postgres.ErrNotFound)
-
-	_, err := newTestAuth(t, db).Login(ctx, "nobody@example.com", "password123")
-	require.ErrorIs(t, err, ErrInvalidCredentials)
-}
-
-func TestLogin_WrongPassword(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	ctrl := gomock.NewController(t)
-	db := mocks.NewMockDB(ctrl)
-
-	hash, err := password.Hash("correct-password")
-	require.NoError(t, err)
-
-	db.EXPECT().GetUserByEmail(ctx, "user@example.com").Return(model.User{
-		ID:           uuid.New(),
-		Email:        "user@example.com",
-		PasswordHash: hash,
-	}, nil)
-
-	_, err = newTestAuth(t, db).Login(ctx, "user@example.com", "wrong-password")
-	require.ErrorIs(t, err, ErrInvalidCredentials)
-}
-
-func TestLogin_MalformedHash(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	ctrl := gomock.NewController(t)
-	db := mocks.NewMockDB(ctrl)
-
-	db.EXPECT().GetUserByEmail(ctx, "user@example.com").Return(model.User{
-		ID:           uuid.New(),
-		Email:        "user@example.com",
-		PasswordHash: "not-a-valid-hash",
-	}, nil)
-
-	_, err := newTestAuth(t, db).Login(ctx, "user@example.com", "password123")
-	require.ErrorIs(t, err, ErrInvalidCredentials)
+		status, _, err := testutil.Request[struct{}](
+			app, http.MethodPost, "/auth/login",
+			loginReq{Email: email, Password: "pass"},
+		)
+		require.NoError(t, err)
+		require.Equal(t, fiber.StatusUnauthorized, status)
+	})
 }
 
 func TestRefresh(t *testing.T) {
 	t.Parallel()
+	pool := testutil.SetupPostgres(t, filepath.Join("..", "..", "migrations", "000001_initial_schema.up.sql"))
+	app := newTestApp(pool)
 
-	ctx := context.Background()
-	ctrl := gomock.NewController(t)
-	db := mocks.NewMockDB(ctrl)
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		tokens := registerNewUser(t, app, uuid.New().String()+"@test.com", "pass")
 
-	db.EXPECT().RotateRefreshToken(ctx, gomock.Any(), gomock.Any(), gomock.Any()).Return(uuid.New(), nil)
+		status, got, err := testutil.Request[tokenResp](
+			app, http.MethodPost, "/auth/refresh",
+			refreshReq{RefreshToken: tokens.RefreshToken},
+		)
+		require.NoError(t, err)
+		require.Equal(t, fiber.StatusOK, status)
+		require.NotEmpty(t, got.AccessToken)
+		require.NotEmpty(t, got.RefreshToken)
+	})
 
-	tokens, err := newTestAuth(t, db).Refresh(ctx, "some-plain-token")
-	require.NoError(t, err)
-	require.NotEmpty(t, tokens.AccessToken)
-	require.NotEmpty(t, tokens.RefreshToken)
-}
-
-func TestRefresh_InvalidToken(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	ctrl := gomock.NewController(t)
-	db := mocks.NewMockDB(ctrl)
-
-	db.EXPECT().RotateRefreshToken(ctx, gomock.Any(), gomock.Any(), gomock.Any()).Return(uuid.UUID{}, postgres.ErrNotFound)
-
-	_, err := newTestAuth(t, db).Refresh(ctx, "invalid-token")
-	require.ErrorIs(t, err, ErrInvalidToken)
+	t.Run("invalid_token", func(t *testing.T) {
+		t.Parallel()
+		status, _, err := testutil.Request[struct{}](
+			app, http.MethodPost, "/auth/refresh",
+			refreshReq{RefreshToken: "invalid-token"},
+		)
+		require.NoError(t, err)
+		require.Equal(t, fiber.StatusUnauthorized, status)
+	})
 }
 
 func TestLogout(t *testing.T) {
 	t.Parallel()
+	pool := testutil.SetupPostgres(t, filepath.Join("..", "..", "migrations", "000001_initial_schema.up.sql"))
+	app := newTestApp(pool)
 
-	ctx := context.Background()
-	ctrl := gomock.NewController(t)
-	db := mocks.NewMockDB(ctrl)
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		tokens := registerNewUser(t, app, uuid.New().String()+"@test.com", "pass")
 
-	db.EXPECT().DeleteRefreshTokenByHash(ctx, gomock.Any()).Return(nil)
+		status, _, err := testutil.Request[struct{}](
+			app, http.MethodPost, "/auth/logout",
+			logoutReq{RefreshToken: tokens.RefreshToken},
+		)
+		require.NoError(t, err)
+		require.Equal(t, fiber.StatusNoContent, status)
+	})
 
-	newTestAuth(t, db).Logout(ctx, "some-plain-token")
+	t.Run("token_reuse", func(t *testing.T) {
+		t.Parallel()
+		tokens := registerNewUser(t, app, uuid.New().String()+"@test.com", "pass")
+
+		status, _, err := testutil.Request[struct{}](
+			app, http.MethodPost, "/auth/logout",
+			logoutReq{RefreshToken: tokens.RefreshToken},
+		)
+		require.NoError(t, err)
+		require.Equal(t, fiber.StatusNoContent, status)
+
+		status, _, err = testutil.Request[struct{}](
+			app, http.MethodPost, "/auth/refresh",
+			refreshReq{RefreshToken: tokens.RefreshToken},
+		)
+		require.NoError(t, err)
+		require.Equal(t, fiber.StatusUnauthorized, status)
+	})
 }
 
 func TestValidateAccessToken(t *testing.T) {
 	t.Parallel()
+	a := New(nil, zerolog.Nop(), testCfg)
 
-	ctrl := gomock.NewController(t)
-	db := mocks.NewMockDB(ctrl)
-	a := newTestAuth(t, db)
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		tokenStr, err := a.newAccessToken(uuid.New())
+		require.NoError(t, err)
 
-	userID := uuid.New()
-	tokenStr, err := a.newAccessToken(userID)
-	require.NoError(t, err)
-
-	claims, err := a.ValidateAccessToken(tokenStr)
-	require.NoError(t, err)
-	require.Equal(t, userID.String(), claims.UserID)
-}
-
-func TestValidateAccessToken_Invalid(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	db := mocks.NewMockDB(ctrl)
-
-	_, err := newTestAuth(t, db).ValidateAccessToken("not.a.valid.token")
-	require.ErrorIs(t, err, ErrInvalidToken)
-}
-
-func TestValidateAccessToken_WrongSecret(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	db := mocks.NewMockDB(ctrl)
-
-	// Token signed with a different secret.
-	other := New(db, zerolog.Nop(), Config{
-		Secret:              "other-secret",
-		AccessTokenDuration: 15 * time.Minute,
+		claims, err := a.validateAccessToken(tokenStr)
+		require.NoError(t, err)
+		require.NotEmpty(t, claims.UserID)
 	})
-	tokenStr, err := other.newAccessToken(uuid.New())
-	require.NoError(t, err)
 
-	_, err = newTestAuth(t, db).ValidateAccessToken(tokenStr)
-	require.ErrorIs(t, err, ErrInvalidToken)
+	t.Run("invalid", func(t *testing.T) {
+		t.Parallel()
+		_, err := a.validateAccessToken("not.a.valid.token")
+		require.ErrorIs(t, err, ErrInvalidToken)
+	})
+
+	t.Run("wrong_secret", func(t *testing.T) {
+		t.Parallel()
+		other := New(nil, zerolog.Nop(), Config{Secret: "other-secret", AccessTokenDuration: 15 * time.Minute})
+		tokenStr, err := other.newAccessToken(uuid.New())
+		require.NoError(t, err)
+
+		_, err = a.validateAccessToken(tokenStr)
+		require.ErrorIs(t, err, ErrInvalidToken)
+	})
 }
-

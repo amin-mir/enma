@@ -5,3 +5,5 @@ https://github.com/gofiber/recipes
 https://github.com/jackc/pgx
 https://github.com/golang-jwt/jwt
 https://github.com/unocss/unocss
+https://github.com/stretchr/testify
+https://github.com/testcontainers/testcontainers-go

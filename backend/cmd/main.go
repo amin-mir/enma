@@ -13,9 +13,8 @@ import (
 
 	"github.com/amin-mir/enma/internal/auth"
 	"github.com/amin-mir/enma/internal/config"
-	"github.com/amin-mir/enma/internal/handler"
-	"github.com/amin-mir/enma/internal/middleware"
-	"github.com/amin-mir/enma/internal/postgres"
+	"github.com/amin-mir/enma/internal/db"
+	"github.com/amin-mir/enma/internal/journal"
 )
 
 func main() {
@@ -23,16 +22,15 @@ func main() {
 
 	cfg := config.Load()
 
-	pool := postgres.NewPool(cfg.PostgresURL)
+	pool := db.NewPool(cfg.PostgresURL)
 	defer pool.Close()
 
-	pg := postgres.New(pool)
-
-	a := auth.New(pg, log.Logger, auth.Config{
+	authService := auth.New(pool, log.Logger, auth.Config{
 		Secret:               cfg.JWTSecret,
 		AccessTokenDuration:  cfg.AccessTokenDuration,
 		RefreshTokenDuration: cfg.RefreshTokenDuration,
 	})
+	journalService := journal.New(pool)
 
 	app := fiber.New(fiber.Config{
 		CaseSensitive: true,
@@ -43,9 +41,11 @@ func main() {
 	app.Use(fiberlogger.New())
 	app.Use(cors.New())
 
+	protected := authService.JWTMiddleware()
+
 	api := app.Group("/api/v1")
-	handler.NewAuthHandler(a).Mount(api)
-	handler.NewJournalHandler(pg).Mount(api, middleware.Protected(a))
+	authService.MountHTTPHandlers(api)
+	journalService.MountHTTPHandlers(api, protected)
 
 	if err := app.Listen(fmt.Sprintf(":%s", cfg.Port)); err != nil {
 		log.Fatal().Err(err).Msg("server failed")
